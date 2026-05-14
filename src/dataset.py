@@ -7,40 +7,80 @@ from transformers import PreTrainedTokenizer
 logger = logging.getLogger(__name__)
 
 
+# ── Cleaning ──────────────────────────────────────────────────────────────────
+
+def clean_dataset(raw):
+    """
+    MedQuAD-specific cleaning:
+    - Drop rows where answer is null (31k records had answers removed for copyright)
+    - Drop rows where answer is too short to be meaningful
+    - Strip whitespace from question and answer
+    """
+    before = len(raw)
+
+    raw = raw.filter(
+        lambda x: x["answer"] is not None and len(x["answer"].strip()) > 20,
+        desc="Filtering null/short answers",
+    )
+
+    raw = raw.map(
+        lambda x: {
+            "question": x["question"].strip() if x["question"] else "",
+            "answer":   x["answer"].strip()   if x["answer"]   else "",
+            "question_focus": x["question_focus"].strip() if x["question_focus"] else "",
+        },
+        desc="Stripping whitespace",
+    )
+
+    after = len(raw)
+    logger.info(f"Cleaning: {before:,} → {after:,} rows ({before - after:,} dropped)")
+    return raw
+
+
+# ── Prompt formatting ─────────────────────────────────────────────────────────
+
 def build_prompt(example: dict, template: str) -> dict:
-    """Fill prompt template with example fields."""
+    """
+    MedQuAD fields:
+      question       → instruction
+      question_focus → input  (disease/topic name — gives the model context)
+      answer         → output
+    """
     return {
         "text": template.format(
-            instruction=example.get("instruction", ""),
-            input=example.get("input", ""),
-            output=example.get("output", ""),
+            instruction=example.get("question", ""),
+            input=example.get("question_focus", ""),
+            output=example.get("answer", ""),
         )
     }
 
+
+# ── Tokenize ──────────────────────────────────────────────────────────────────
 
 def tokenize(batch: dict, tokenizer: PreTrainedTokenizer, max_len: int) -> dict:
     tokens = tokenizer(
         batch["text"],
         truncation=True,
         max_length=max_len,
-        padding=False,         # DataCollator handles padding at batch time
+        padding=False,
     )
     tokens["labels"] = tokens["input_ids"].copy()
     return tokens
 
+
+# ── Main loader ───────────────────────────────────────────────────────────────
 
 def load_and_prepare_dataset(
     cfg: dict[str, Any],
     tokenizer: PreTrainedTokenizer,
 ) -> DatasetDict:
     """
-    Steps
-    -----
-    1. Load raw dataset from HuggingFace hub (or local path)
-    2. Train / val split
-    3. Apply prompt template
-    4. Tokenize — labels == input_ids (causal LM)
-    5. Return DatasetDict with 'train' and 'test' keys
+    1. Load MedQuAD from HuggingFace Hub
+    2. Clean — drop null/short answers
+    3. Train / val split
+    4. Apply prompt template
+    5. Tokenize
+    6. Return DatasetDict with 'train' and 'test' keys
     """
     data_cfg = cfg["data"]
     template = data_cfg["prompt_template"]
@@ -51,6 +91,9 @@ def load_and_prepare_dataset(
         data_cfg["dataset_name"],
         split=data_cfg["dataset_split"],
     )
+
+    # ── Clean ─────────────────────────────────────────────────────────────────
+    raw = clean_dataset(raw)
 
     # ── Train / val split ─────────────────────────────────────────────────────
     split = raw.train_test_split(
@@ -75,7 +118,6 @@ def load_and_prepare_dataset(
     )
     split.set_format("torch")
 
-    # ── Sanity check ──────────────────────────────────────────────────────────
     sample_len = split["train"][0]["input_ids"].shape[0]
     logger.info(f"Sample token length: {sample_len} / {max_len}")
 
