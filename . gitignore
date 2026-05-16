@@ -1,47 +1,12 @@
-# Python
 __pycache__/
 *.py[cod]
-*.pyo
-.Python
-*.egg-info/
-dist/
-build/
-.eggs/
-
-# Virtual environments
+.env
 venv/
-.env/
-.venv/
-
-# Outputs — too large for git
 outputs/
 *.png
 *.json
-
-# Model weights — never commit these
-*.bin
-*.safetensors
-*.pt
-*.pth
-lora_adapter/
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb_checkpoints
-
-# HuggingFace cache
-.cache/
-~/.cache/huggingface/
-
-# Environment variables
-.env
-*.env
-
-# OS
+finetuned-gpt2-medium/
+Sci-Fi-Books-gutenberg/
 .DS_Store
-Thumbs.db
-
-# Logs
 *.log
-runs/
 wandb/

@@ -1,12 +1,8 @@
 torch>=2.1.0
-transformers>=4.40.0
+transformers>=4.44.0
 datasets>=2.18.0
-peft>=0.10.0
-trl>=0.8.6
-bitsandbytes>=0.43.0
-accelerate>=0.28.0
-sentencepiece>=0.1.99
+accelerate>=0.32.0
 evaluate>=0.4.0
-rouge-score>=0.1.2
-pyyaml>=6.0
+pandas>=2.0.0
 matplotlib>=3.8.0
+pyyaml>=6.0

@@ -6,12 +6,12 @@ from typing import Any
 
 from transformers import (
     DataCollatorForLanguageModeling,
+    Trainer,
     TrainerCallback,
     TrainerState,
     TrainerControl,
     TrainingArguments,
 )
-from trl import SFTTrainer
 from datasets import DatasetDict
 
 logger = logging.getLogger(__name__)
@@ -34,19 +34,10 @@ class MetricsHistory:
 # ── Callback ──────────────────────────────────────────────────────────────────
 
 class LossRecorderCallback(TrainerCallback):
-    """Records train + eval loss at every log step for plotting later."""
-
     def __init__(self, history: MetricsHistory):
         self.history = history
 
-    def on_log(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        logs: dict | None = None,
-        **kwargs,
-    ):
+    def on_log(self, args, state: TrainerState, control: TrainerControl, logs=None, **kw):
         if not logs:
             return
         step = state.global_step
@@ -68,12 +59,11 @@ def _build_args(cfg: dict[str, Any]) -> TrainingArguments:
         gradient_accumulation_steps=t["gradient_accumulation_steps"],
         learning_rate=t["learning_rate"],
         lr_scheduler_type=t["lr_scheduler_type"],
-        warmup_ratio=t["warmup_ratio"],
+        warmup_steps=t["warmup_steps"],
         weight_decay=t["weight_decay"],
         fp16=t["fp16"],
-        bf16=t["bf16"],
         logging_steps=t["logging_steps"],
-        evaluation_strategy=t["eval_strategy"],
+        eval_strategy=t["eval_strategy"],
         eval_steps=t["eval_steps"],
         save_strategy=t["save_strategy"],
         save_steps=t["save_steps"],
@@ -81,44 +71,27 @@ def _build_args(cfg: dict[str, Any]) -> TrainingArguments:
         load_best_model_at_end=t["load_best_model_at_end"],
         report_to=t["report_to"],
         seed=t["seed"],
-        dataloader_pin_memory=False,  # must be False on Colab
-        group_by_length=True,         # batches similar-length seqs → less padding waste
+        dataloader_pin_memory=False,
     )
 
 
 # ── Train ─────────────────────────────────────────────────────────────────────
 
-def train(
-    model,
-    tokenizer,
-    dataset: DatasetDict,
-    cfg: dict[str, Any],
-) -> tuple[SFTTrainer, MetricsHistory]:
-    """
-    Run supervised fine-tuning.
-
-    Returns
-    -------
-    trainer  : SFTTrainer with best checkpoint loaded
-    history  : MetricsHistory for plotting
-    """
+def train(model, tokenizer, dataset: DatasetDict, cfg: dict[str, Any]):
     history  = MetricsHistory()
     args     = _build_args(cfg)
     collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
         args=args,
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
-        tokenizer=tokenizer,
         data_collator=collator,
-        dataset_text_field=None,
-        max_seq_length=cfg["data"]["max_seq_length"],
         callbacks=[LossRecorderCallback(history)],
     )
 
-    logger.info("Training started …")
+    logger.info("Training started ...")
     trainer.train()
     logger.info("Training complete.")
 
@@ -128,12 +101,10 @@ def train(
     return trainer, history
 
 
-# ── Save adapter ──────────────────────────────────────────────────────────────
+# ── Save ──────────────────────────────────────────────────────────────────────
 
-def save_adapter(trainer: SFTTrainer, output_dir: str) -> str:
-    """Save LoRA adapter weights only — lightweight, shareable on HF Hub."""
-    path = os.path.join(output_dir, "lora_adapter")
+def save_model(trainer: Trainer, tokenizer, output_dir: str) -> None:
+    path = os.path.join(output_dir, "finetuned-gpt2-medium")
     trainer.model.save_pretrained(path)
-    trainer.tokenizer.save_pretrained(path)
-    logger.info(f"Adapter saved → {path}")
-    return path
+    tokenizer.save_pretrained(path)
+    logger.info(f"Model saved → {path}")
