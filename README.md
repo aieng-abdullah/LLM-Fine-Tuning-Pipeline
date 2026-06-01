@@ -1,18 +1,12 @@
-# Fine-tune GPT-2 Medium on Sci-Fi Literature
+# Fine-tune GPT-2 Medium on Sci-Fi Literature with QLoRA
 
-A production-structured NLP project demonstrating domain-specific language model fine-tuning. GPT-2 Medium is adapted from general English text to generate coherent, stylistically authentic science fiction prose using classic works from Project Gutenberg.
+A production-structured NLP project demonstrating domain-specific language model fine-tuning using QLoRA. GPT-2 Medium (345M) is adapted from general English text to generate coherent, stylistically authentic science fiction prose using classic works from Project Gutenberg.
 
 ---
 
 ## The Problem This Solves
 
-General-purpose language models like GPT-2 are trained on broad internet text. When asked to generate science fiction, they produce generic output that lacks the narrative style, vocabulary, and thematic depth of the genre.
-
-**The core problem:** A model trained on everything knows a little about everything but masters nothing.
-
-**The solution:** Fine-tuning on a curated domain corpus forces the model to specialize. After training on Sci-Fi literature, the model generates text that reflects the genre's distinctive patterns — interstellar settings, technical language, character archetypes, and narrative tension — rather than generic prose.
-
-This is the same principle behind production LLMs used in legal document generation, medical record summarization, and code completion: take a strong base model and adapt it cheaply to a specific domain.
+General-purpose language models produce generic output that lacks the narrative style, vocabulary, and thematic depth of science fiction. Fine-tuning on a curated domain corpus forces the model to specialize.
 
 ---
 
@@ -20,10 +14,94 @@ This is the same principle behind production LLMs used in legal document generat
 
 | Approach | Problem |
 |---|---|
-| Train from scratch | Needs billions of tokens, weeks of compute, not feasible |
-| Prompt engineering | No weight updates, model doesn't actually learn the domain |
-| Full fine-tuning on 7B+ model | Too large for free GPU, requires QLoRA/quantization |
-| **This project** | **GPT-2 Medium (345M) is small enough to fully fine-tune on a free T4 in ~14 minutes** |
+| Train from scratch | Needs billions of tokens, weeks of compute |
+| Prompt engineering | No weight updates, model doesn't learn the domain |
+| Full fine-tuning on 7B+ model | Too large for free GPU |
+| **This project** | **GPT-2 Medium (345M) + QLoRA on free T4 — fast, safe, proven** |
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        config.yaml                                  │
+│            (all hyperparameters in one place)                       │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  1. MODEL LOADING  (src/model.py)                                   │
+│  ┌─────────────────┐    ┌──────────────────┐    ┌───────────────┐  │
+│  │  GPT-2 Medium   │───▶│ BitsAndBytes     │───▶│  PEFT / LoRA  │  │
+│  │  (345M params)  │    │ 4-bit NF4        │    │  Adapters     │  │
+│  │  HuggingFace    │    │ Quantization     │    │  (c_attn,     │  │
+│  │                 │    │                  │    │   c_proj)     │  │
+│  └─────────────────┘    └──────────────────┘    └───────────────┘  │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  2. DATASET  (src/Dataset.py)                                       │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌────────────────┐  │
+│  │ CSV Load │──▶│ Cleaning │──▶│  Split   │──▶│  Tokenization  │  │
+│  │ (pandas) │   │ - nulls  │   │ train/   │   │  pad to        │  │
+│  │          │   │ - short  │   │ val      │   │  max_length    │  │
+│  │          │   │ - dupes  │   │          │   │                │  │
+│  └──────────┘   └──────────┘   └──────────┘   └────────────────┘  │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  3. TRAINING  (src/trainer.py)                                      │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │              HuggingFace Trainer                               │  │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────┐ │  │
+│  │  │  Training-  │  │  DataCollator│  │  MetricsCallback     │ │  │
+│  │  │  Arguments  │  │  (LM, no MLM)│  │  (loss, lr, grad)    │ │  │
+│  │  └─────────────┘  └──────────────┘  └──────────────────────┘ │  │
+│  │                                                               │  │
+│  │  Optimizer: paged_adamw_8bit                                  │  │
+│  │  Scheduler: cosine with warmup                                │  │
+│  │  Mixed precision: bf16/fp16                                   │  │
+│  └───────────────────────────┬───────────────────────────────────┘  │
+│                              │                                      │
+│                              ▼                                      │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  Save LoRA adapters + tokenizer ──▶ outputs/                  │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  4. EVALUATION  (src/evaluate.py)                                   │
+│  ┌──────────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │  Perplexity      │  │  Loss Curves │  │  eval_report.json    │  │
+│  │  exp(eval_loss)  │  │  (matplotlib)│  │  (loss, perplexity)  │  │
+│  └──────────────────┘  └──────────────┘  └──────────────────────┘  │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  5. INFERENCE  (src/inference.py)                                   │
+│  ┌──────────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │  Load saved      │  │  HuggingFace │  │  Text Generation     │  │
+│  │  LoRA model      │──▶│  pipeline    │──▶  (temperature, top_p,│  │
+│  │  + tokenizer     │  │              │  │   repetition_pen)    │  │
+│  └──────────────────┘  └──────────────┘  └──────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Pipeline Data Flow
+
+| Stage | Module | Input | Output |
+|-------|--------|-------|--------|
+| **1. Config** | `configs/config.yaml` | User edits | `cfg` dict |
+| **2. Model** | `src/model.py` | `cfg` | 4-bit GPT-2 + LoRA adapters |
+| **3. Dataset** | `src/Dataset.py` | `cfg` + `tokenizer` | `DatasetDict` (train/test) |
+| **4. Train** | `src/trainer.py` | model + dataset + cfg | Trained model + metrics |
+| **5. Eval** | `src/evaluate.py` | eval_loss + history | perplexity + loss plots |
+| **6. Inference** | `src/inference.py` | saved model + prompt | Generated text |
 
 ---
 
@@ -31,97 +109,45 @@ This is the same principle behind production LLMs used in legal document generat
 
 | | |
 |---|---|
-| **Base model** | `gpt2-medium` — 345M parameters, 24 layers, 16 attention heads |
+| **Base model** | `gpt2-medium` — 345M parameters |
+| **Fine-tuning** | QLoRA (4-bit NF4 quantization + LoRA on `c_attn`, `c_proj`) |
 | **Dataset** | [Sci-Fi Books — Project Gutenberg](https://huggingface.co/datasets/stevez80/Sci-Fi-Books-gutenberg) |
-| **Domain** | Classic science fiction — H.G. Wells, Jules Verne, Edgar Rice Burroughs and others |
 | **Hardware** | Google Colab Free Tier — NVIDIA T4 (16GB VRAM) |
-| **Training time** | ~14 minutes for 2 epochs |
-| **Framework** | PyTorch · HuggingFace Transformers |
-
----
-
-## Results
-
-| Metric | Value |
-|--------|-------|
-| Train loss | 0.456 |
-| Total steps | 5,366 |
-| Epochs | 2 |
-| Train samples/sec | 6.576 |
-
-**Loss curves — model converging over training**
-
-![Loss curves](outputs/loss_curves.png)
-
-**Sample generation**
-
-```
-Prompt     : In a distant galaxy, a lady, the daughter of a prince,
-             is called to the palace in an attempt to bring her husband
-             back to civilization.
-             Written by David P. Williams
-```
+| **Training time** | ~25 minutes |
+| **Framework** | PyTorch + HuggingFace Transformers + PEFT |
 
 ---
 
 ## Project Structure
 
 ```
-gpt2-finetune/
+LLM-Fine-Tuning-Pipeline/
 ├── configs/
-│   └── config.yaml        # all hyperparameters in one place
+│   └── config.yaml              # all hyperparameters
 ├── src/
-│   ├── model.py           # model + tokenizer loading
-│   ├── dataset.py         # CSV loading, cleaning, tokenization
-│   ├── trainer.py         # HuggingFace Trainer + loss recording callback
-│   ├── evaluate.py        # perplexity computation + loss curve plots
-│   └── inference.py       # load saved model + generate text
-├── train.py               # entry point — runs full pipeline
-├── notebook.ipynb         # Colab-ready notebook with inline plots
+│   ├── model.py                 # model + tokenizer loading (4-bit QLoRA)
+│   ├── Dataset.py               # CSV loading, cleaning, tokenization
+│   ├── trainer.py               # Trainer + metrics callback
+│   ├── evaluate.py              # perplexity + loss curves
+│   └── inference.py             # load saved model + generate text
+├── train.py                     # entry point — runs full pipeline
+├── GPT2-QLoRA-SciFi.ipynb      # Colab notebook (main focus)
 ├── requirements.txt
 └── README.md
 ```
 
-The project is split into focused modules so each concern is isolated. `train.py` orchestrates everything — swap the dataset or model by changing one line in `config.yaml` without touching any source code.
-
 ---
 
-## How It Works
+## Metrics Tracked
 
-### 1. Data pipeline
-
-The dataset contains full-text Sci-Fi books as rows in a CSV. Empty rows and very short texts are dropped. Each book is tokenized to 512 tokens — sequences longer than 512 tokens are truncated, shorter ones are padded to maintain uniform batch shapes.
-
-```python
-# labels = input_ids for causal language modeling
-# the model predicts each next token given all previous tokens
-tokens["labels"] = tokens["input_ids"].copy()
-```
-
-### 2. Causal language modeling
-
-GPT-2 is trained with a next-token prediction objective. Given the sequence `"The ship approached the"`, it learns to predict `"planet"`. Cross-entropy loss measures how surprised the model is by each actual next token. Lower loss = model has learned the domain's patterns.
-
-### 3. Training setup
-
-```
-Effective batch size = per_device_batch (1) × gradient_accumulation (8) = 8
-Learning rate        = 5e-5 with cosine decay + 100 warmup steps
-Precision            = fp16 (halves memory, speeds up compute on T4)
-Best checkpoint      = saved based on lowest eval loss
-```
-
-### 4. Evaluation
-
-**Perplexity** = `exp(eval_loss)`. Measures how surprised the model is by held-out text. Lower perplexity = model has learned the domain's patterns better.
-
-- Random model: perplexity ~1000+
-- Pretrained GPT-2 Medium on general text: ~30–50
-- After Sci-Fi fine-tuning: drops further toward the domain distribution
-
-### 5. Inference
-
-The saved model is loaded and wrapped in a HuggingFace `pipeline` for clean text generation. Temperature and top-p sampling control the creativity vs coherence tradeoff.
+| Metric | Description |
+|---|---|
+| `eval_loss` | Cross-entropy loss on validation set |
+| `perplexity` | exp(eval_loss) — lower = better |
+| `token_accuracy` | % of correctly predicted tokens |
+| `train_loss` | Per-step training loss |
+| `learning_rate` | LR schedule over training |
+| `grad_norm` | Gradient norm (detects instability) |
 
 ---
 
@@ -129,16 +155,16 @@ The saved model is loaded and wrapped in a HuggingFace `pipeline` for clean text
 
 ### Option A — Colab (recommended)
 
-1. Open `notebook.ipynb` in Google Colab
+1. Open `GPT2-QLoRA-SciFi.ipynb` in Google Colab
 2. Set runtime to **T4 GPU** — Runtime → Change runtime type → T4
 3. Run all cells top to bottom
-4. Training completes in ~14 minutes
+4. Training completes in ~25 minutes
 
 ### Option B — Local
 
 ```bash
 git clone https://github.com/aieng-abdullah/LLM-Fine-Tuning-Pipeline
-cd gpt2-finetune
+cd LLM-Fine-Tuning-Pipeline
 pip install -r requirements.txt
 python train.py
 ```
@@ -148,13 +174,13 @@ python train.py
 ```python
 from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
 
-model     = AutoModelForCausalLM.from_pretrained("outputs/finetuned-gpt2-medium")
-tokenizer = AutoTokenizer.from_pretrained("outputs/finetuned-gpt2-medium")
+model     = AutoModelForCausalLM.from_pretrained("./finetuned-gpt2-medium")
+tokenizer = AutoTokenizer.from_pretrained("./finetuned-gpt2-medium")
 generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
 
 out = generator(
     "In a distant galaxy, a lone spacecraft",
-    max_new_tokens=100,
+    max_new_tokens=200,
     temperature=0.8,
     do_sample=True,
 )
@@ -165,54 +191,34 @@ print(out[0]["generated_text"])
 
 ## Key Engineering Decisions
 
-**Why not use LoRA/QLoRA here?**
-GPT-2 Medium at 345M parameters fits entirely in T4 VRAM with fp16. Quantization and adapter layers add complexity with no benefit at this scale. QLoRA makes sense for 7B+ models where full fine-tuning is impossible without it.
+**Why QLoRA on GPT-2 Medium?**
+GPT-2 Medium at 345M fits in fp16 on T4, but QLoRA (4-bit) reduces memory to ~3-4 GiB, leaving headroom for larger batches and faster training.
 
-**Why gradient accumulation?**
-T4 has 16GB VRAM. A batch of 8 full 512-token sequences doesn't fit. Accumulating gradients over 8 steps of batch-size-1 achieves the same effective batch mathematically — without OOM errors.
+**Why these LoRA target modules?**
+GPT-2 uses Conv1D layers (`c_attn`, `c_proj`) instead of separate Q/K/V projections. These are the attention layers — LoRA adapters here capture the domain-specific attention patterns.
 
-**Why cosine learning rate?**
-Cosine decay smoothly reduces the learning rate over training, preventing the model from overshooting optimal weights at the end. Combined with warmup steps, it stabilizes early training when gradients are noisy.
+**Why gradient checkpointing?**
+Trades compute for memory by recomputing activations during backward pass. Essential for fitting model + LoRA + optimizer in T4 VRAM.
 
-**Why save best checkpoint by eval loss?**
-Training loss always decreases. Eval loss is the honest signal — it measures performance on data the model never saw. Saving the checkpoint with lowest eval loss guards against overfitting.
-
-**Why full fine-tuning instead of LoRA on GPT-2?**
-LoRA reduces trainable parameters by injecting low-rank matrices into attention layers. For a 345M model on a 16GB GPU, there is no memory pressure that requires this tradeoff. Full fine-tuning updates all weights and produces better domain adaptation when compute allows it.
+**Why paged AdamW?**
+Memory-efficient optimizer that offloads optimizer states to CPU when VRAM is tight. Standard for QLoRA training.
 
 ---
 
 ## Configuration
 
-All hyperparameters live in `configs/config.yaml`. To experiment with a different model:
+All hyperparameters live in `configs/config.yaml`. To experiment:
 
 ```yaml
 model:
-  name: "gpt2-large"        # or gpt2-xl, distilgpt2
+  name: "gpt2-medium"
 
-data:
-  csv_path: "./your-dataset/data.csv"   # any CSV with a 'text' column
+qlora:
+  lora_r: 32          # increase for more capacity
+  lora_alpha: 64      # usually 2x lora_r
+  lora_dropout: 0.1   # increase for regularization
+
+training:
+  num_train_epochs: 3
+  learning_rate: 1e-4
 ```
-
----
-
-## Outputs
-
-After training, `outputs/` contains:
-
-```
-outputs/
-├── finetuned-gpt2-medium/    # full model weights
-├── loss_curves.png           # train + eval loss over steps
-├── eval_report.json          # eval loss + perplexity
-└── metrics_history.json      # raw step-by-step loss logs
-```
-
----
-
-## References
-
-- [Language Models are Unsupervised Multitask Learners](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) — Radford et al., 2019
-- [Sci-Fi Books dataset](https://huggingface.co/datasets/stevez80/Sci-Fi-Books-gutenberg)
-- [HuggingFace Transformers](https://github.com/huggingface/transformers)
-- [HuggingFace Trainer docs](https://huggingface.co/docs/transformers/main_classes/trainer)
